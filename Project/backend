@@ -1,52 +1,36 @@
+import os
+import json
+from difflib import SequenceMatcher
 from flask import Flask, jsonify, request
 from google import genai
 from dotenv import load_dotenv
-import os
-import sqlite3
-from difflib import SequenceMatcher
+from prompt import SYSTEM_PROMPT  # Imported from your initial setup
 
-# Load API key
+# Load environment variables
 load_dotenv()
 
+# Initialize Gemini Client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 
-# ---------------- DATABASE ---------------- #
+# Name of the local JSON storage file
+FEEDBACK_FILE = "feedback.json"
 
-def init_db():
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS feedback(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        question TEXT,
-        answer TEXT,
-        rating TEXT,
-        comments TEXT
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# ---------------- FAQ ---------------- #
+# ---------------- FAQ LIST ---------------- #
 
 FAQ = [
     {
-        "question":"How do I connect to WiFi?",
-        "answer":"Open Settings > Wi-Fi > Turn Wi-Fi ON > Select your network > Enter the password."
+        "question": "How do I connect to WiFi?",
+        "answer": "Open Settings > Wi-Fi > Turn Wi-Fi ON > Select your network > Enter the password."
     },
     {
-        "question":"How do I increase the volume?",
-        "answer":"Press the Volume Up button on the side of your phone."
+        "question": "How do I increase the volume?",
+        "answer": "Press the Volume Up button on the side of your phone."
     },
     {
-        "question":"How do I send a WhatsApp message?",
-        "answer":"Open WhatsApp, choose a contact, type your message, and tap the Send button."
+        "question": "How do I send a WhatsApp message?",
+        "answer": "Open WhatsApp, choose a contact, type your message, and tap the Send button."
     }
 ]
 
@@ -56,18 +40,25 @@ def similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def find_previous_feedback(question):
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
-
-    c.execute("SELECT question, answer, rating FROM feedback")
-    rows = c.fetchall()
-
-    conn.close()
+    # If the JSON file doesn't exist yet, there is no historical history to search
+    if not os.path.exists(FEEDBACK_FILE):
+        return None
+        
+    try:
+        with open(FEEDBACK_FILE, "r") as file:
+            rows = json.load(file)
+    except (json.JSONDecodeError, ValueError):
+        # Fallback if file exists but is corrupted or empty
+        return None
 
     best = None
     best_score = 0
 
-    for q, ans, rating in rows:
+    for item in rows:
+        q = item.get("question", "")
+        ans = item.get("answer", "")
+        rating = item.get("rating", "")
+        
         score = similarity(question, q)
         if score > best_score:
             best_score = score
@@ -84,22 +75,46 @@ def find_previous_feedback(question):
 def home():
     return "Backend is running!"
 
-# Ask AI
+@app.route("/health")
+def health():
+    return jsonify({
+        "success": True,
+        "status": "Backend is healthy"
+    }), 200
+
+# Ask AI Endpoint
 @app.route("/ask", methods=["POST"])
 def ask():
+    try:
+        # Receive and validate JSON payload
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No JSON data received."
+            }), 400
 
-    data = request.get_json()
+        # Extract values (with .strip() parsing from initial code)
+        question = data.get("question", "").strip()
+        phone = data.get("phone", "").strip()
 
-    question = data.get("question","")
+        if not question:
+            return jsonify({
+                "success": False,
+                "error": "Question cannot be empty."
+            }), 400
 
-    previous = find_previous_feedback(question)
+        # ---------------- LOGGING ----------------
+        print("\n========== NEW REQUEST ==========")
+        print("Phone :", phone if phone else "Not Provided")
+        print("Question :", question)
 
-    prompt = question
-
-    if previous:
-        _, _, rating = previous
-
-        if rating.lower() == "bad":
+        # Check for historical feedback matching this question from JSON
+        previous = find_previous_feedback(question)
+        
+        # Determine prompt structure based on database rating history
+        if previous and previous[2].lower() == "bad":
+            # Target pivot to senior citizen instructions if previous help failed
             prompt = f"""
 The previous explanation for this question was confusing.
 
@@ -110,46 +125,91 @@ Use:
 - Numbered steps
 - No technical jargon
 
+Phone Type:
+{phone if phone else "Not specified"}
+
 Question:
 {question}
 """
+        else:
+            # Standard structural fallback context from your initial system prompt setup
+            prompt = f"""
+{SYSTEM_PROMPT}
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+Phone Type:
+{phone if phone else "Not specified"}
 
-    return jsonify({
-        "answer": response.text
-    })
+User Question:
+{question}
+"""
 
-# Save feedback
+        # ---------------- GEMINI API CALL ----------------
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+
+        print("Response :", response.text)
+        print("=================================\n")
+
+        return jsonify({
+            "success": True,
+            "model": "gemini-2.5-flash",
+            "answer": response.text
+        }), 200
+
+    except Exception as e:
+        print("\nERROR:", e)
+        return jsonify({
+            "success": False,
+            "error": "Something went wrong while processing your request.",
+            "details": str(e)
+        }), 500
+
+# Save feedback Endpoint (JSON Auto-Creation Version)
 @app.route("/feedback", methods=["POST"])
 def feedback():
+    try:
+        data = request.get_json()
+        
+        new_feedback = {
+            "question": data["question"],
+            "answer": data["answer"],
+            "rating": data["rating"],
+            "comments": data.get("comments", "")
+        }
 
-    data = request.get_json()
+        file_data = []
 
-    question = data["question"]
-    answer = data["answer"]
-    rating = data["rating"]
-    comments = data.get("comments","")
+        # 1. Read existing data if the file already exists
+        if os.path.exists(FEEDBACK_FILE):
+            with open(FEEDBACK_FILE, "r") as file:
+                try:
+                    file_data = json.load(file)
+                except json.JSONDecodeError:
+                    # Handle edge-case where file is blank
+                    file_data = []
 
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
+        # 2. Append the new piece of feedback
+        file_data.append(new_feedback)
 
-    c.execute(
-        "INSERT INTO feedback(question,answer,rating,comments) VALUES(?,?,?,?)",
-        (question,answer,rating,comments)
-    )
+        # 3. Write everything back. "w" mode handles file creation automatically.
+        with open(FEEDBACK_FILE, "w") as file:
+            json.dump(file_data, file, indent=4)
 
-    conn.commit()
-    conn.close()
+        return jsonify({
+            "success": True,
+            "message": "Feedback saved successfully to JSON file."
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": "Failed to save feedback.",
+            "details": str(e)
+        }), 500
 
-    return jsonify({
-        "message":"Feedback saved successfully."
-    })
-
-# FAQ
+# Static FAQ Endpoint
 @app.route("/faq", methods=["GET"])
 def faq():
     return jsonify(FAQ)

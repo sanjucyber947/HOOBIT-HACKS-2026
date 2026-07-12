@@ -2,3 +2,5 @@
 env.txt
 __pycache__/
 *.pyc
+feedback.json
+backend.txt

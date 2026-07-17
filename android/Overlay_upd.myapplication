@@ -1,0 +1,126 @@
+package com.example.myapplication
+
+import android.app.Service
+import android.content.Intent
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.IBinder
+import android.view.Gravity
+import android.view.WindowManager
+import android.view.MotionEvent
+import android.view.WindowManager.LayoutParams
+import android.widget.ImageButton
+import android.widget.Toast
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
+import kotlin.math.abs
+
+class OverlayService : Service() {
+
+    private lateinit var windowManager: WindowManager
+    private lateinit var floatingButton: ImageButton
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        floatingButton = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_dialog_info)
+            background = null
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+
+        params.gravity = Gravity.TOP or Gravity.START
+        params.x = 800
+        params.y = 1200
+
+        var initialX = 0
+        var initialY = 0
+
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        floatingButton.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = initialX + (event.rawX - initialTouchX).toInt()
+                    params.y = initialY + (event.rawY - initialTouchY).toInt()
+                    windowManager.updateViewLayout(floatingButton, params)
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    val dx = abs(event.rawX - initialTouchX)
+                    val dy = abs(event.rawY - initialTouchY)
+
+                    if (dx < 10 && dy < 10) {
+                        println("Bubble clicked!")
+                        // ADDED: Triggers the network request on bubble tap
+                        askBackendGemini()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        windowManager.addView(floatingButton, params)
+    }
+
+    // ADDED: Connection function calling your Flask API via Retrofit
+    private fun askBackendGemini() {
+        Toast.makeText(this, "Asking Gemini...", Toast.LENGTH_SHORT).show()
+
+        val requestData = AskRequest(
+            question = "How do I increase the volume?", 
+            phone = "Samsung Galaxy S23"
+        )
+
+        RetrofitClient.instance.askGemini(requestData).enqueue(object : Callback<AskResponse> {
+            override fun onResponse(call: Call<AskResponse>, response: Response<AskResponse>) {
+                if (response.isSuccessful && response.body() != null) {
+                    val aiAnswer = response.body()!!.answer
+                    println("API SUCCESS: $aiAnswer")
+                    Toast.makeText(applicationContext, "AI: $aiAnswer", Toast.LENGTH_LONG).show()
+                } else {
+                    println("API ERROR Code: ${response.code()}")
+                    Toast.makeText(applicationContext, "Server Error: ${response.code()}", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            override fun onFailure(call: Call<AskResponse>, t: Throwable) {
+                println("API NETWORK FAILURE: ${t.message}")
+                Toast.makeText(applicationContext, "Failed to connect to backend", Toast.LENGTH_SHORT).show()
+            }
+        })
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::floatingButton.isInitialized) {
+            windowManager.removeView(floatingButton)
+        }
+    }
+}

@@ -2,7 +2,7 @@
 ## Our Project for the HOOBIT HACKS Hackathon
 # ElderAsk_AI
 
-## 📱 AI-Powered Smartphone Assistant for Senior Citizens
+##  AI-Powered Smartphone Assistant for Senior Citizens
 
 ElderAsk_AI is an AI-powered Android application designed to help senior citizens use smartphones with confidence. The app provides simple, step-by-step guidance for everyday smartphone tasks using Google's Gemini AI, making technology more accessible and less intimidating.
 
